@@ -1406,8 +1406,9 @@ function QuickSettings:build()
     end
     if Device:hasNaturalLight() then
         table.insert(vg, VerticalSpan:new{ width = self.unit * 2 })
-        table.insert(vg, self:slider(_("Warmth"), powerd:frontlightWarmth(), powerd.fl_warmth_min, powerd.fl_warmth_max, 4,
-            function(v) powerd:setWarmth(v) end))
+        -- powerd's warmth API is 0-100; the slider shows the Kindle's own 0-24 steps.
+        table.insert(vg, self:slider(_("Warmth"), powerd:toNativeWarmth(powerd:frontlightWarmth()), powerd.fl_warmth_min, powerd.fl_warmth_max, 1,
+            function(v) powerd:setWarmth(powerd:fromNativeWarmth(v)) end))
     end
     table.insert(vg, VerticalSpan:new{ width = self.unit * 3 })
     self[1] = VerticalGroup:new{
