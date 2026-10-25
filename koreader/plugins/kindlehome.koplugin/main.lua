@@ -773,7 +773,7 @@ function HomeScreen:showExtras()
     local disabled = G_reader_settings:readSetting("plugins_disabled") or {}
     local dialog
     local rows = {}
-    for _, extra in ipairs(EXTRAS) do
+    for __, extra in ipairs(EXTRAS) do
         local on = not disabled[extra.name]
         local row = {{
             text = (on and "✓  " or "✗  ") .. extra.label,
