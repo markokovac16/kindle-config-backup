@@ -721,6 +721,14 @@ function HomeScreen:showMoreMenu()
                 UIManager:close(dialog)
                 if self.ui.statistics then self.ui.statistics:onShowCalendarView() end
             end }},
+            {{ text = _("Sudoku"), callback = function()
+                UIManager:close(dialog)
+                if self.ui.sudokuplus then self.ui.sudokuplus:onOpenSudokuPlus() end
+            end },
+             { text = _("2048"), callback = function()
+                UIManager:close(dialog)
+                if self.ui["2048"] then self.ui["2048"]:startGame() end
+            end }},
             {{ text = _("KOReader menu"), callback = function()
                 UIManager:close(dialog)
                 self.ui.menu:onShowMenu()
