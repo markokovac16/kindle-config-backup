@@ -808,7 +808,7 @@ function HomeScreen:showExtras()
         end,
     }})
     dialog = ButtonDialog:new{
-        title = _("Extras\nPanel zoom: in a manga, open the top menu → Panels+"),
+        title = _("Extras\nPanel zoom: tap a manga page with two fingers"),
         title_align = "center",
         buttons = rows,
     }
