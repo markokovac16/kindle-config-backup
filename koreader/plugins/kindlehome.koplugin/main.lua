@@ -1578,6 +1578,27 @@ function KindleHome:init()
     end
 end
 
+-- In a book, swiping down from the top edge opens the same quick settings panel, as on a stock
+-- Kindle; a tap up there still opens KOReader's menu.
+function KindleHome:onReaderReady()
+    if not self.ui.document then return end
+    self.ui:registerTouchZones({
+        {
+            id = "kindlehome_quicksettings",
+            ges = "swipe",
+            screen_zone = { ratio_x = 0, ratio_y = 0, ratio_w = 1, ratio_h = 1 / 8 },
+            overrides = { "readermenu_swipe", "readermenu_ext_swipe" },
+            handler = function(ges)
+                if ges.direction ~= "south" then return end
+                -- The panel only needs these few things from its host.
+                local host = { ui = self.ui, status_h = math.floor(Screen:getHeight() * 0.04), updateStatus = function() end }
+                UIManager:show(QuickSettings:new{ home = host }, "ui")
+                return true
+            end,
+        },
+    })
+end
+
 function KindleHome:showHome(tab)
     if KindleHome.widget and UIManager:isWidgetShown(KindleHome.widget) then
         UIManager:close(KindleHome.widget)

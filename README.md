@@ -25,3 +25,8 @@ redoes the Pi side from scratch.
 greyscale pages fitted to the PW5's 1236x1648 screen, in natural chapter/page order. Put the result
 under `/mnt/us/documents/Manga/<Series>/` so it gets the manga defaults; the home plugin gives each series folder its own collection; `2-comics.lua` flashes every 2 pages
 while a comic is open.
+
+Two-page spreads are rotated 90° counter-clockwise (turn the Kindle clockwise to read them).
+For volumes already on the Kindle: `tools/scan_spreads.py spreads.json` finds landscape pages over
+SSH, `tools/rotate_spreads.py spreads.json` rotates just those pages in place (appends them plus a
+new central directory, then swaps the file atomically).

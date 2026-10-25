@@ -18,8 +18,9 @@ pages.sort(key=key)
 with zipfile.ZipFile(dst, "w", zipfile.ZIP_STORED) as zout:
     for n, info in enumerate(pages, 1):
         im = Image.open(io.BytesIO(zin.read(info))).convert("L")
-        bw, bh = (H, W) if im.width > im.height else (W, H)  # spreads fit landscape
-        scale = min(bw / im.width, bh / im.height, 1.0)
+        if im.width > im.height:  # two-page spread: rotate so it fills the screen with the Kindle turned clockwise
+            im = im.rotate(90, expand=True)
+        scale = min(W / im.width, H / im.height, 1.0)
         if scale < 1.0:
             im = im.resize((round(im.width * scale), round(im.height * scale)), Image.LANCZOS)
         buf = io.BytesIO()
