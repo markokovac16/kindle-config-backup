@@ -720,6 +720,16 @@ function HomeScreen:showMoreMenu()
             {{ text = _("Reading stats"), callback = function()
                 UIManager:close(dialog)
                 if self.ui.statistics then self.ui.statistics:onShowCalendarView() end
+            end },
+             { text = _("Reading Wrapped"), callback = function()
+                UIManager:close(dialog)
+                -- Make sure the statistics plugin has written its latest pages.
+                if self.ui.statistics and self.ui.statistics.insertDB then pcall(self.ui.statistics.insertDB, self.ui.statistics) end
+                require("kindlehome_wrapped").show({
+                    files = function() return self.books or {} end,
+                    meta = bookMeta,
+                    cover = coverWidget,
+                })
             end }},
             {{ text = _("Sudoku"), callback = function()
                 UIManager:close(dialog)
