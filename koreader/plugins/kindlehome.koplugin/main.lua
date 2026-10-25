@@ -1582,11 +1582,13 @@ end
 -- Kindle; a tap up there still opens KOReader's menu.
 function KindleHome:onReaderReady()
     if not self.ui.document then return end
+    -- Right half of the top edge only; the left half keeps KOReader's own menu swipe.
+    local area = { ratio_x = 1 / 2, ratio_y = 0, ratio_w = 1 / 2, ratio_h = 1 / 8 }
     self.ui:registerTouchZones({
         {
             id = "kindlehome_quicksettings",
             ges = "swipe",
-            screen_zone = { ratio_x = 0, ratio_y = 0, ratio_w = 1, ratio_h = 1 / 8 },
+            screen_zone = area,
             overrides = { "readermenu_swipe", "readermenu_ext_swipe" },
             handler = function(ges)
                 if ges.direction ~= "south" then return end
@@ -1595,6 +1597,14 @@ function KindleHome:onReaderReady()
                 UIManager:show(QuickSettings:new{ home = host }, "ui")
                 return true
             end,
+        },
+        {
+            -- Swallow the drag, or KOReader's pan zones open its menus mid-swipe.
+            id = "kindlehome_quicksettings_pan",
+            ges = "pan",
+            screen_zone = area,
+            overrides = { "readermenu_pan", "readermenu_ext_pan" },
+            handler = function(ges) return ges.direction == "south" or nil end,
         },
     })
 end
