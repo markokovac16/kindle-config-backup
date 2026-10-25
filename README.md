@@ -2,13 +2,17 @@
 
 Kindle Paperwhite 5 (FW 5.18.6, jailbroken), KOReader only. Live copies of everything custom.
 
+**Setting it up from scratch (jailbreak → KOReader → this home screen → extras): see [INSTALL.md](INSTALL.md).**
+
 | Here | On the Kindle |
 |---|---|
 | `koreader/plugins/kindlehome.koplugin` | `/mnt/us/koreader/plugins/` (Kindle-style home screen, quick settings, reading stats) |
 | `koreader/patches/*.lua` | `/mnt/us/koreader/patches/` (settings applied at start; see each file's header) |
 | `koreader/settings/directory_defaults.lua` | `/mnt/us/koreader/settings/` (per-folder first-open defaults: Manga = right-to-left, dithering) |
 | `system/koreader-autostart.conf` | `/etc/upstart/` (rootfs: `mntroot rw` first). Kill switch: `NO_KOREADER_AUTOSTART` file on the USB drive |
-| `system/tz-Europe-Zagreb` | `/var/local/system/tz` (stock tz was a broken fixed GMT+01:46) |
+| `system/tz-Europe-Zagreb`, `system/tzVar` | `/var/local/system/tz`, `/var/local/system/tzVar` (stock tz was a broken fixed GMT+01:46) |
+| `system/route-to-koreader.sh` | run once over SSH: stock library opens MOBI/PDF in KOReader via KOmpanion (backs up appreg.db/cc.db) |
+| `system/Retag for KOReader.sh` | `/mnt/us/documents/` (tap after sideloading MOBI/PDF) |
 | `backup/backup-out.sh` | `/mnt/us/koreader/backup-out.sh` |
 | `backup/pi-backup.sh` | Pi `~/kindle-backup/backup.sh`, cron every 15 min |
 
