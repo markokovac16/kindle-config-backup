@@ -1,0 +1,377 @@
+-- engines/remglk.lua — the single RemGlk JSON engine.
+--
+-- One engine drives both VMs (bocfel for Z-machine, git for Glulx): they link
+-- the same RemGlk Glk I/O layer and emit the *same* JSON `update` objects, so
+-- only the binary differs (chosen by extension in main.lua).
+--
+-- The engine is deliberately free of KOReader dependencies. It is handed:
+--   * a transport — spawn/send/read/terminate of the VM subprocess (session.lua
+--     in KOReader; a host shim in the headless harness);
+--   * a json codec — { decode(str)->table, encode(table)->str } (rapidjson in
+--     KOReader; a hand-rolled codec in the harness).
+-- This keeps the whole engine unit-testable off-device (see notes/harness/).
+--
+-- Transport contract:
+--   transport:send(str)              -- write a newline-terminated JSON command
+--   transport:read_nonblocking()     -- return any new stdout bytes, or nil
+--   transport:is_alive()             -- bool
+--   transport:terminate()            -- kill + cleanup
+--
+-- Protocol facts this engine relies on (verified against real bocfel/git output,
+-- see notes/remglk_devlog.md):
+--   * The VM blocks for input after each `update`; one update == one turn.
+--   * Updates are pretty-printed, multi-line JSON objects on stdout. We frame on
+--     brace depth (string/escape aware) and only ever hand a *complete* object to
+--     the parser — never accept on a quiet flush, which could split a turn.
+--   * NEVER hardcode window id or input gen: ids are not stable across runs and
+--     RemGlk fatal-errors if the echoed gen != current gen. We read both from each
+--     update's `input` block and echo them on the next command.
+
+local RemGlk = {}
+RemGlk.__index = RemGlk
+
+-- Find the first complete top-level JSON object in `buf`.
+-- Returns start_index, end_index (inclusive) of the object, or nil if no
+-- complete object is buffered yet. String- and escape-aware so braces inside
+-- string values are not counted.
+local function find_object(buf)
+    local start = buf:find("{", 1, true)
+    if not start then return nil end
+    local depth, in_str, esc = 0, false, false
+    local n = #buf
+    for i = start, n do
+        local c = buf:sub(i, i)
+        if in_str then
+            if esc then
+                esc = false
+            elseif c == "\\" then
+                esc = true
+            elseif c == '"' then
+                in_str = false
+            end
+        else
+            if c == '"' then
+                in_str = true
+            elseif c == "{" then
+                depth = depth + 1
+            elseif c == "}" then
+                depth = depth - 1
+                if depth == 0 then
+                    return start, i
+                end
+            end
+        end
+    end
+    return nil  -- incomplete; need more bytes
+end
+
+-- cols/rows: screen size in characters, sent in the JSON `init` (not -w/-h).
+function RemGlk:new(transport, json, cols, rows)
+    local o = setmetatable({
+        transport      = transport,
+        json           = json,
+        cols           = cols or 80,
+        rows           = rows or 50,
+        _buf           = "",
+        _gen           = 0,            -- gen to echo on the next command
+        _input_window  = nil,          -- window the VM is waiting on
+        _status        = nil,          -- last known status line (carried forward)
+        _buf_pending   = false,        -- a non-append line needs a leading newline
+        windows        = nil,          -- last seen window geometry (for gameview)
+        -- Optional hook, set by the display layer: function(image_span) ->
+        -- text, style. RemGlk sends only a Blorb resource number for an
+        -- illustration, never pixels, so the display layer decides what (if
+        -- anything) an image becomes in the story text. nil = drop images.
+        image_hook     = nil,
+    }, self)
+
+    -- Handshake: send `init` immediately so the VM produces its first update.
+    -- We advertise graphics caps even though Phase A doesn't render images: without
+    -- them, a game's glk_image_draw emits `{"type":"error","message":"image_draw:
+    -- graphics not supported"}` on stdout, which we'd read as a fatal error and end
+    -- the game. With the caps RemGlk emits an image *span* instead (ignored by
+    -- gameview) and play continues. Sound is deliberately NOT advertised: it is
+    -- fully stubbed in RemGlk (schannel_create returns NULL), so advertising it
+    -- would make games attempt playback and hit "invalid id" warnings.
+    transport:send(json.encode({
+        type    = "init",
+        gen     = 0,
+        metrics = { width = o.cols, height = o.rows },
+        support = { "timer", "hyperlinks", "graphics", "graphicswin" },
+    }) .. "\n")
+
+    return o
+end
+
+-- ── Outgoing commands ───────────────────────────────────────────────────────
+-- gen is always the engine's tracked gen (from the last input request); window
+-- defaults to the window the VM last asked on, so callers can omit it.
+
+function RemGlk:send_line(window, text)
+    self.transport:send(self.json.encode({
+        type = "line", gen = self._gen,
+        window = window or self._input_window, value = text,
+    }) .. "\n")
+end
+
+function RemGlk:send_char(window, key)
+    self.transport:send(self.json.encode({
+        type = "char", gen = self._gen,
+        window = window or self._input_window, value = key,
+    }) .. "\n")
+end
+
+-- A tap on a link. RemGlk carries link ids as plain numbers; the id alone
+-- identifies the link, the window is the one the input request named.
+function RemGlk:send_hyperlink(window, value)
+    self.transport:send(self.json.encode({
+        type = "hyperlink", gen = self._gen,
+        window = window or self._input_window, value = value,
+    }) .. "\n")
+end
+
+-- Twine player extensions (twine/protocol.js): a Twine story has no save verb,
+-- so the display layer asks the player to write or read its state directly.
+-- The next update carries the outcome under the same key ({ok, message}).
+-- A Glk VM would reject these; only send them to the Twine player.
+function RemGlk:send_savestate(path)
+    self.transport:send(self.json.encode({ type = "savestate", gen = self._gen, path = path }) .. "\n")
+end
+
+function RemGlk:send_restorestate(path)
+    self.transport:send(self.json.encode({ type = "restorestate", gen = self._gen, path = path }) .. "\n")
+end
+
+function RemGlk:send_undo()
+    self.transport:send(self.json.encode({ type = "undo", gen = self._gen }) .. "\n")
+end
+
+-- Timer events are the DISPLAY layer's job in RemGlk: when a game asks for them
+-- the VM emits an update requesting no input at all and simply waits for us to
+-- send this. Without it such a turn hangs forever with input disabled.
+function RemGlk:send_timer()
+    self.transport:send(self.json.encode({
+        type = "timer", gen = self._gen,
+    }) .. "\n")
+end
+
+-- Answer a fileref_prompt (save/restore/transcript) with the chosen path.
+function RemGlk:send_fileref(path)
+    self.transport:send(self.json.encode({
+        type = "specialresponse", gen = self._gen,
+        response = "fileref_prompt", value = { filename = path },
+    }) .. "\n")
+end
+
+function RemGlk:is_alive()  return self.transport:is_alive()  end
+function RemGlk:terminate() return self.transport:terminate() end
+
+-- ── Update parsing ──────────────────────────────────────────────────────────
+
+-- Flatten a grid window's content lines into { {line=N, text=".."}, ... } and
+-- update the carried-forward status string.
+function RemGlk:_absorb_grid(c, status_parts)
+    local lines = {}
+    for _, l in ipairs(c.lines or {}) do
+        local parts = {}
+        for _, span in ipairs(l.content or {}) do
+            if span.text then parts[#parts + 1] = span.text end
+        end
+        local text = table.concat(parts)
+        lines[#lines + 1] = { line = l.line, text = text }
+        if text:find("%S") then status_parts[#status_parts + 1] = text:gsub("^%s+", ""):gsub("%s+$", "") end
+    end
+    return { id = c.id, lines = lines }
+end
+
+-- Append a buffer window's content as styled runs into `runs`, honoring the
+-- append/blank-line/clear semantics of RemGlk's `text` array. Returns whether a
+-- clear was requested.
+function RemGlk:_absorb_buffer(c, runs)
+    local cleared = false
+    if c.clear then
+        cleared = true
+        self._buf_pending = false  -- transcript reset: no leading newline
+    end
+    for _, line in ipairs(c.text or {}) do
+        local spans = line.content or {}
+        -- Resolve the line's spans BEFORE deciding whether the line exists at
+        -- all. A line can carry nothing we render — an image the hook drops, or
+        -- a setcolor/fill special we never render — and emitting its newline
+        -- anyway would leave a blank line in the transcript for every
+        -- suppressed ornament.
+        local line_runs, own_line = {}, false
+        for _, span in ipairs(spans) do
+            local run, standalone
+            if span.text then
+                run = {
+                    text = span.text,
+                    style = span.style or "normal",
+                    hyperlink = span.hyperlink,
+                }
+            elseif span.special == "image" then
+                local text, style
+                if self.image_hook then text, style = self.image_hook(span) end
+                if not text and span.hyperlink then
+                    -- A picture that is a link (Twine) stays tappable even when
+                    -- it is not worth a placeholder of its own.
+                    local alt = type(span.alttext) == "string" and span.alttext ~= "" and span.alttext
+                    text, style = "[" .. (alt or "Image") .. "]", "normal"
+                end
+                if text then
+                    run, standalone = { text = text, style = style or "normal",
+                                        hyperlink = span.hyperlink }, true
+                end
+            end
+            -- image/setcolor/fill spans with no replacement are dropped; see
+            -- remglk_migration_plan.md §4a.
+            if run then
+                -- An image placeholder gets a physical line of its own rather
+                -- than being jammed into the prose it interrupts.
+                if #line_runs > 0 and (standalone or own_line) then
+                    line_runs[#line_runs + 1] = { text = "\n", style = "normal" }
+                end
+                line_runs[#line_runs + 1] = run
+                own_line = standalone
+            end
+        end
+
+        if #spans == 0 or #line_runs > 0 then
+            local is_append = line.append == true
+            if not is_append and self._buf_pending then
+                runs[#runs + 1] = { text = "\n", style = "normal" }
+            end
+            for _, run in ipairs(line_runs) do
+                runs[#runs + 1] = run
+            end
+            self._buf_pending = true
+        end
+    end
+    return cleared
+end
+
+-- Turn a decoded RemGlk object into the normalized Update gameview consumes.
+function RemGlk:_normalize(obj)
+    if obj.type == "error" then
+        return { error = obj.message or "VM error", raw = obj }
+    end
+
+    local update = { gen = obj.gen, raw = obj, story = {}, grids = {} }
+
+    if obj.windows then self.windows = obj.windows end
+    -- Expose the carried-forward window geometry every turn: gameview needs grid
+    -- heights to tell a status bar from an epigraph/menu, and to notice a grid
+    -- collapsing to height 0 on a turn that sends only a geometry change (e.g.
+    -- Photopia clearing its epigraph upper window) with no grid content.
+    update.windows = self.windows
+
+    local status_parts = {}
+    for _, c in ipairs(obj.content or {}) do
+        if c.lines then                                   -- grid window
+            update.grids[#update.grids + 1] = self:_absorb_grid(c, status_parts)
+        elseif c.text then                                -- buffer window
+            if self:_absorb_buffer(c, update.story) then update.cleared = true end
+        end
+    end
+    if #status_parts > 0 then
+        self._status = table.concat(status_parts, "  ")
+    end
+    update.status = self._status
+
+    -- This update's links in reading order, so a link can also be chosen by
+    -- number or text rather than a tap.
+    local links, by_id = {}, {}
+    for _, run in ipairs(update.story) do
+        local id = run.hyperlink
+        if id and id ~= 0 then
+            if not by_id[id] then
+                by_id[id] = { id = id, text = "" }
+                links[#links + 1] = by_id[id]
+            end
+            by_id[id].text = by_id[id].text .. run.text
+        end
+    end
+    update.links = links
+
+    -- Track the update's gen as the default to echo (a specialresponse uses this;
+    -- a line/char input below overrides it with the input entry's own gen).
+    if obj.gen ~= nil then self._gen = obj.gen end
+
+    -- Timer interval, reported only when it CHANGES: a number starts or
+    -- restarts it, JSON null cancels it, an absent field means "unchanged".
+    -- null decodes to a sentinel (rapidjson.null), not nil, so a present-but-
+    -- not-a-number value really is a cancel and not a missing key.
+    if obj.timer ~= nil then
+        update.timer = (type(obj.timer) == "number" and obj.timer > 0) and obj.timer or false
+    end
+
+    -- Turn boundary: the input request. line / char come in the input[] array.
+    -- A hyperlink request is a flag on an entry, with or without a type: the
+    -- Twine player asks for a link alone (rgdata.c prints no "type" then).
+    for _, inp in ipairs(obj.input or {}) do
+        local typed = inp.type == "line" or inp.type == "char"
+        if typed or inp.hyperlink == true then
+            self._gen = inp.gen
+            self._input_window = inp.id
+            update.input = {
+                kind      = typed and inp.type or nil,
+                window    = inp.id,
+                gen       = inp.gen,
+                maxlen    = inp.maxlen,
+                hyperlink = inp.hyperlink == true,
+            }
+            break
+        end
+    end
+
+    -- A fileref prompt (save / restore / transcript) arrives as a TOP-LEVEL
+    -- `specialinput` field with an empty input[] — verified against real bocfel
+    -- output (the plan's §4 sketch nested it inside input[]; reality differs).
+    -- The response echoes the update's gen and carries no window.
+    local si = obj.specialinput
+    if si and si.type == "fileref_prompt" then
+        update.fileref = {
+            purpose  = si.filetype,    -- "save" / "restore" / "transcript" / ...
+            filemode = si.filemode,    -- "read" / "write" / "readwrite"
+            gen      = obj.gen,
+        }
+    end
+
+    -- Outcomes of the Twine player's savestate / restorestate / undo events.
+    update.savestate    = obj.savestate
+    update.restorestate = obj.restorestate
+    update.undo         = obj.undo
+    -- Twine player extras: the story's own title (first update only), and
+    -- whether this page is the same passage visit changed in place.
+    if type(obj.title) == "string" and obj.title ~= "" then update.title = obj.title end
+    update.samepage = obj.samepage == true
+
+    if obj.exit == true then update.exited = true end
+    return update
+end
+
+-- Non-blocking. Pull any available bytes, and if a complete update has arrived,
+-- parse + normalize it and return the Update. Returns nil while a turn is still
+-- in flight (no complete object yet) — the caller polls again later. The UI
+-- drives this from a scheduler; the harness drives it from a sleep loop.
+function RemGlk:poll()
+    local chunk = self.transport:read_nonblocking()
+    if chunk then self._buf = self._buf .. chunk end
+
+    local s, e = find_object(self._buf)
+    if not e then return nil end
+
+    local objstr = self._buf:sub(s, e)
+    self._buf = self._buf:sub(e + 1)
+
+    local ok, obj = pcall(self.json.decode, objstr)
+    if not ok or type(obj) ~= "table" then
+        return { error = "JSON decode failed", raw = objstr }
+    end
+    return self:_normalize(obj)
+end
+
+-- Exposed for tests.
+RemGlk._find_object = find_object
+
+return RemGlk
