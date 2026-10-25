@@ -766,7 +766,6 @@ end
 -- so a change needs a restart).
 local EXTRAS = {
     { name = "panelsplus", label = _("Panel zoom for manga") },
-    { name = "frotz", label = _("Text adventures"), open = function(ui, home) home:showAdventures() end },
     { name = "kopet", label = _("Reading pet"), open = function(ui) ui:handleEvent(Event:new("KoPetShowPanel")) end },
 }
 
@@ -813,41 +812,6 @@ function HomeScreen:showExtras()
         title_align = "center",
         buttons = rows,
     }
-    UIManager:show(dialog)
-end
-
--- One button per game in koreader/ifgames/<Game>/, so nobody has to long-press a file.
-function HomeScreen:showAdventures()
-    local root = DataStorage:getDataDir() .. "/ifgames"
-    local games = {}
-    if lfs.attributes(root, "mode") == "directory" then
-        for name in lfs.dir(root) do
-            local dir = root .. "/" .. name
-            if name:sub(1, 1) ~= "." and lfs.attributes(dir, "mode") == "directory" then
-                for file in lfs.dir(dir) do
-                    if file:match("%.z%d$") or file:match("%.zblorb$") or file:match("%.ulx$")
-                            or file:match("%.gblorb$") or file:match("%.t3$") or file:match("%.gam$") then
-                        table.insert(games, { name = name, path = dir .. "/" .. file })
-                        break
-                    end
-                end
-            end
-        end
-    end
-    table.sort(games, function(a, b) return a.name < b.name end)
-    local dialog
-    local rows = {}
-    for __, game in ipairs(games) do
-        table.insert(rows, {{ text = game.name, callback = function()
-            UIManager:close(dialog)
-            self.ui.frotz:_startGame(game.path)
-        end }})
-    end
-    table.insert(rows, {{ text = _("Other games…"), callback = function()
-        UIManager:close(dialog)
-        self.ui.frotz:_openFileBrowser()
-    end }})
-    dialog = ButtonDialog:new{ title = _("Text adventures"), title_align = "center", buttons = rows }
     UIManager:show(dialog)
 end
 
