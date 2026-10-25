@@ -315,7 +315,8 @@ local function placeholderCover(m, w, h)
 end
 
 -- Cover scaled to fit w x h, bottom aligned like the Kindle grid.
-local function coverWidget(m, w, h)
+-- `badge` (e.g. "42%") is drawn in the cover's bottom-right corner, like the Kindle library.
+local function coverWidget(m, w, h, badge)
     local b = getBIM()
     local info = b and m.has_cover and b:getBookInfo(m.file, true)
     local inner
@@ -336,7 +337,20 @@ local function coverWidget(m, w, h)
     else
         inner = placeholderCover(m, math.floor(h * 0.68 < w and h * 0.68 or w), h)
     end
-    return BottomContainer:new{ dimen = Geom:new{ w = w, h = h }, inner }
+    local cover = BottomContainer:new{ dimen = Geom:new{ w = w, h = h }, inner }
+    if not badge then return cover end
+    local label = TextWidget:new{ text = badge, face = sans(pxToSize(Screen:getHeight() * 0.0105), true) }
+    local lh = label:getSize().h
+    local tag = FrameContainer:new{
+        bordersize = Size.border.thin, radius = math.floor(lh / 2), margin = 0,
+        padding = 0, padding_left = math.floor(lh * 0.45), padding_right = math.floor(lh * 0.45),
+        color = BLACK, background = WHITE,
+        label,
+    }
+    local ts, iw = tag:getSize(), inner:getSize().w
+    local inset = math.floor(lh * 0.3)
+    tag.overlap_offset = { math.floor((w + iw) / 2) - ts.w - inset, h - ts.h - inset }
+    return OverlapGroup:new{ dimen = Geom:new{ w = w, h = h }, cover, tag }
 end
 
 local function progressBar(pct, w, h)
@@ -821,7 +835,27 @@ function HomeScreen:sectionHeader(text, action_text, action)
 end
 
 -- One book: cover plus a reading-progress footer.
-function HomeScreen:bookTile(file, w, h)
+-- Two lines of title under a library cover; its fixed height keeps the rows aligned.
+function HomeScreen:tileTitle(text, w)
+    return TextBoxWidget:new{
+        text = text or "",
+        face = sans(pxToSize(self.height * 0.0125)),
+        width = w,
+        height = self:tileTitleHeight(),
+        height_overflow_show_ellipsis = true,
+    }
+end
+
+function HomeScreen:tileTitleHeight()
+    if not self.tile_title_h then
+        local probe = TextBoxWidget:new{ text = "Ag\nAg", face = sans(pxToSize(self.height * 0.0125)), width = 100 }
+        self.tile_title_h = probe:getSize().h
+        probe:free()
+    end
+    return self.tile_title_h
+end
+
+function HomeScreen:bookTile(file, w, h, titled)
     local foot_h = math.floor(w * 0.08)
     local pct, status = bookProgress(file)
     local footer
@@ -837,9 +871,12 @@ function HomeScreen:bookTile(file, w, h)
         hold_callback = self:later(function() self:showBookMenu(file) end),
         VerticalGroup:new{
             align = "left",
-            coverWidget(bookMeta(file), w, h),
+            coverWidget(bookMeta(file), w, h, titled and (status == "complete" and _("Read")
+                or pct and pct > 0 and string.format("%d%%", math.floor(pct * 100 + 0.5)) or nil)),
             VerticalSpan:new{ width = math.floor(foot_h * 0.4) },
-            LeftContainer:new{ dimen = Geom:new{ w = w, h = foot_h }, footer },
+            -- Library tiles show the title instead of progress.
+            titled and self:tileTitle(bookMeta(file).title, w)
+                or LeftContainer:new{ dimen = Geom:new{ w = w, h = foot_h }, footer },
         },
     }
 end
@@ -1232,9 +1269,16 @@ function HomeScreen:buildLibrary()
         self:sortFiles(files, self.sort)
         local cols = 4
         local w = math.floor((self.cw - (cols - 1) * self.gap) / cols)
-        local foot = math.floor(math.floor(w * 0.08) * 1.4)
+        local foot = math.floor(math.floor(w * 0.08) * 0.4) + self:tileTitleHeight()
         local h = math.min(math.floor(w * 1.45), math.floor((avail - 2 * self.gap) / 3) - foot)
-        local make = function(f) return self:bookTile(f, w, h) end
+        local make = function(f) return self:bookTile(f, w, h, true) end
+        -- Shrink the covers by whatever a real tile overshoots a third of the space (title metrics vary).
+        if files[1] then
+            local probe = make(files[1])
+            local over = probe:getSize().h - math.floor((avail - 2 * self.gap) / 3)
+            probe:free()
+            if over > 0 then h = h - over end
+        end
         local rows = self:fitRows(avail, self.gap, files[1] and make(files[1]))
         if #files == 0 then
             table.insert(vg, CenterContainer:new{
