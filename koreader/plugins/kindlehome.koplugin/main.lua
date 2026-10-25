@@ -820,15 +820,16 @@ end
 function HomeScreen:showAdventures()
     local root = DataStorage:getDataDir() .. "/ifgames"
     local games = {}
-    if lfs.attributes(root, "mode") ~= "directory" then root = nil end
-    for name in root and lfs.dir(root) or function() end do
-        local dir = root .. "/" .. name
-        if name:sub(1, 1) ~= "." and lfs.attributes(dir, "mode") == "directory" then
-            for file in lfs.dir(dir) do
-                if file:match("%.z%d$") or file:match("%.zblorb$") or file:match("%.ulx$")
-                        or file:match("%.gblorb$") or file:match("%.t3$") or file:match("%.gam$") then
-                    table.insert(games, { name = name, path = dir .. "/" .. file })
-                    break
+    if lfs.attributes(root, "mode") == "directory" then
+        for name in lfs.dir(root) do
+            local dir = root .. "/" .. name
+            if name:sub(1, 1) ~= "." and lfs.attributes(dir, "mode") == "directory" then
+                for file in lfs.dir(dir) do
+                    if file:match("%.z%d$") or file:match("%.zblorb$") or file:match("%.ulx$")
+                            or file:match("%.gblorb$") or file:match("%.t3$") or file:match("%.gam$") then
+                        table.insert(games, { name = name, path = dir .. "/" .. file })
+                        break
+                    end
                 end
             end
         end
