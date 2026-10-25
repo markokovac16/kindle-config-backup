@@ -43,8 +43,10 @@ local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local DataStorage = require("datastorage")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
+local time = require("ui/time")
 local util = require("util")
 local _ = require("gettext")
+local RenderImage = require("ui/renderimage")
 local Screen = Device.screen
 
 local WHITE = Blitbuffer.COLOR_WHITE
@@ -121,25 +123,38 @@ local function bookProgress(file)
     return info.percent_finished, info.status
 end
 
+-- Folder listings are kept while the folder's modification time stays the same (adding,
+-- moving or deleting a file in it changes that), so going home only re-lists what changed.
+-- Times are whole seconds, so a listing made within 2 s of a change isn't trusted.
+local scan_cache = {}
 local function scanBooks(dir, out)
-    local ok, iter, dir_obj = pcall(lfs.dir, dir)
-    if not ok then return out end
-    for name in iter, dir_obj do
-        if name ~= "." and name ~= ".." and name:sub(1, 1) ~= "." then
-            local path = dir .. "/" .. name
-            local mode = lfs.attributes(path, "mode")
-            if mode == "directory" then
-                if not name:match("%.sdr$") and name ~= "dictionaries" then
-                    scanBooks(path, out)
-                end
-            elseif mode == "file" then
-                local ext = util.getFileNameSuffix(name):lower()
-                if BOOK_EXT[ext] and not name:find("Dictionary") and not name:lower():match("^spidercat") then
-                    table.insert(out, path)
+    local mtime = lfs.attributes(dir, "modification")
+    if not mtime then return out end
+    local c = scan_cache[dir]
+    if not c or c.mtime ~= mtime or c.listed - mtime < 2 then
+        local ok, iter, dir_obj = pcall(lfs.dir, dir)
+        if not ok then return out end
+        c = { mtime = mtime, listed = os.time(), files = {}, dirs = {} }
+        for name in iter, dir_obj do
+            if name ~= "." and name ~= ".." and name:sub(1, 1) ~= "." then
+                local path = dir .. "/" .. name
+                local mode = lfs.attributes(path, "mode")
+                if mode == "directory" then
+                    if not name:match("%.sdr$") and name ~= "dictionaries" then
+                        table.insert(c.dirs, path)
+                    end
+                elseif mode == "file" then
+                    local ext = util.getFileNameSuffix(name):lower()
+                    if BOOK_EXT[ext] and not name:find("Dictionary") and not name:lower():match("^spidercat") then
+                        table.insert(c.files, path)
+                    end
                 end
             end
         end
+        scan_cache[dir] = c
     end
+    for _, f in ipairs(c.files) do table.insert(out, f) end
+    for _, d in ipairs(c.dirs) do scanBooks(d, out) end
     return out
 end
 
@@ -323,22 +338,44 @@ end
 
 -- Cover scaled to fit w x h, bottom aligned like the Kindle grid.
 -- `badge` (e.g. "42%") is drawn in the cover's bottom-right corner, like the Kindle library.
-local function coverWidget(m, w, h, badge)
+-- Covers scaled for a tile, kept between home screen builds so they aren't decompressed and
+-- scaled again every time. Cleared when it grows past a few library pages, or when new covers
+-- have been extracted. Never freed by hand: a widget still on screen may be using one, and the
+-- garbage collector frees a blitbuffer once nothing references it.
+local cover_cache, cover_count = {}, 0
+local function clearCoverCache()
+    cover_cache, cover_count = {}, 0
+end
+
+local function scaledCover(file, w, h)
+    local key = file .. "|" .. w .. "x" .. h
+    local bb = cover_cache[key]
+    if bb then return bb end
     local b = getBIM()
-    local info = b and m.has_cover and b:getBookInfo(m.file, true)
+    local info = b and b:getBookInfo(file, true)
+    if not (info and info.cover_bb) then return nil end
+    local cw, ch = info.cover_bb:getWidth(), info.cover_bb:getHeight()
+    local scale = math.min(w / cw, h / ch)
+    local border = Size.border.thin
+    bb = RenderImage:scaleBlitBuffer(info.cover_bb,
+        math.floor(cw * scale + 0.5) - 2 * border, math.floor(ch * scale + 0.5) - 2 * border, true)
+    if cover_count >= 60 then clearCoverCache() end
+    cover_cache[key] = bb
+    cover_count = cover_count + 1
+    return bb
+end
+
+local function coverWidget(m, w, h, badge)
+    local bb = m.has_cover and scaledCover(m.file, w, h)
     local inner
-    if info and info.cover_bb then
-        local bb = info.cover_bb
-        local cw, ch = bb:getWidth(), bb:getHeight()
-        local scale = math.min(w / cw, h / ch)
-        local border = Size.border.thin
+    if bb then
         inner = FrameContainer:new{
-            bordersize = border, padding = 0, margin = 0,
+            bordersize = Size.border.thin, padding = 0, margin = 0,
             ImageWidget:new{
                 image = bb,
-                image_disposable = true,
-                width = math.floor(cw * scale + 0.5) - 2 * border,
-                height = math.floor(ch * scale + 0.5) - 2 * border,
+                image_disposable = false,
+                width = bb:getWidth(),
+                height = bb:getHeight(),
             },
         }
     else
@@ -405,8 +442,10 @@ function HomeScreen:init()
     if Device:hasKeys() then
         self.key_events = { Close = { { Device.input.group.Back } } }
     end
+    local t0 = time.now()
     self:loadData()
     self:render()
+    logger.info("KindleHome: built in", time.to_ms(time.now() - t0), "ms")
     UIManager:nextTick(function() self:extractMissing() end)
     self:scheduleClock()
 end
@@ -452,7 +491,10 @@ local function syncSeriesCollections()
 end
 
 function HomeScreen:loadData()
-    meta_cache = {}
+    -- Titles and authors only change when Project: Title extracts a book; keep the known ones.
+    for f, m in pairs(meta_cache) do
+        if not m.cached then meta_cache[f] = nil end
+    end
     self:loadStats()
     local home_dir = G_reader_settings:readSetting("home_dir")
         or (Device:isKindle() and "/mnt/us/documents") or lfs.currentdir()
@@ -541,6 +583,7 @@ function HomeScreen:extractMissing()
             UIManager:scheduleIn(3, poll)
         else
             meta_cache = {}
+            clearCoverCache()
             self:refresh(pageMode())
         end
     end
