@@ -668,6 +668,10 @@ function HomeScreen:showMoreMenu()
                 UIManager:close(dialog)
                 UIManager:close(self)
             end }},
+            {{ text = _("Reading stats"), callback = function()
+                UIManager:close(dialog)
+                if self.ui.statistics then self.ui.statistics:onShowCalendarView() end
+            end }},
             {{ text = _("KOReader menu"), callback = function()
                 UIManager:close(dialog)
                 self.ui.menu:onShowMenu()
@@ -916,7 +920,7 @@ function HomeScreen:heroCard(file)
     }
 end
 
--- Today / streak / this week; tapping opens the statistics calendar.
+-- Today / streak / this week. Part of the hero card, so a tap opens the book; the calendar is under More.
 function HomeScreen:statsRow(w)
     local st = self.stats
     local cell_w = math.floor(w / 3)
@@ -930,16 +934,11 @@ function HomeScreen:statsRow(w)
             },
         }
     end
-    return Tappable:new{
-        callback = self:later(function()
-            if self.ui.statistics then self.ui.statistics:onShowCalendarView() end
-        end),
-        HorizontalGroup:new{
-            align = "top",
-            cell(durationText(st.today), _("Today")),
-            cell(st.streak == 1 and _("1 day") or string.format(_("%d days"), st.streak), _("Streak")),
-            cell(tostring(st.week_pages), _("Pages this week")),
-        },
+    return HorizontalGroup:new{
+        align = "top",
+        cell(durationText(st.today), _("Today")),
+        cell(st.streak == 1 and _("1 day") or string.format(_("%d days"), st.streak), _("Streak")),
+        cell(tostring(st.week_pages), _("Pages this week")),
     }
 end
 
