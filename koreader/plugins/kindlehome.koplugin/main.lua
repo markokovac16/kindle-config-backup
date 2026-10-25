@@ -728,6 +728,10 @@ function HomeScreen:showMoreMenu()
              { text = _("2048"), callback = function()
                 UIManager:close(dialog)
                 if self.ui["2048"] then self.ui["2048"]:startGame() end
+            end },
+             { text = _("Chess"), callback = function()
+                UIManager:close(dialog)
+                if self.ui.chess then self.ui.chess:startGame() end
             end }},
             {{ text = _("KOReader menu"), callback = function()
                 UIManager:close(dialog)
