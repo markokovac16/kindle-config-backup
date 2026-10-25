@@ -405,6 +405,31 @@ function HomeScreen:loadStats()
     self.stats_day = os.date("%Y-%m-%d")
 end
 
+-- Each series folder under Manga/ gets its own collection, linked to that folder so new volumes
+-- join it. Done once per folder: a series collection deleted by hand stays deleted.
+-- (The manga reading settings come from the folder itself, see settings/directory_defaults.lua.)
+local MANGA_DIR = "/mnt/us/documents/Manga"
+local function syncSeriesCollections()
+    if lfs.attributes(MANGA_DIR, "mode") ~= "directory" then return false end
+    local made = G_reader_settings:readSetting("kindlehome_series_collections") or {}
+    local changed = false
+    for f in lfs.dir(MANGA_DIR) do
+        local path = MANGA_DIR .. "/" .. f
+        if f:sub(1, 1) ~= "." and not f:find("%.sdr$") and not made[path]
+                and lfs.attributes(path, "mode") == "directory" then
+            if not ReadCollection.coll[f] then ReadCollection:addCollection(f) end
+            local cs = ReadCollection.coll_settings[f]
+            cs.folders = cs.folders or {}
+            cs.folders[path] = { subfolders = true, scan_on_show = true }
+            ReadCollection:updateCollectionFromFolder(f)
+            made[path] = true
+            changed = true
+        end
+    end
+    if changed then G_reader_settings:saveSetting("kindlehome_series_collections", made) end
+    return changed
+end
+
 function HomeScreen:loadData()
     meta_cache = {}
     self:loadStats()
@@ -424,7 +449,8 @@ function HomeScreen:loadData()
         end
     end
     ReadCollection:_read()
-    -- Folder-linked collections (e.g. Manga) only rescan when collection.lua changes; pick up
+    if syncSeriesCollections() then ReadCollection:write() end
+    -- Folder-linked collections (e.g. manga series) only rescan when collection.lua changes; pick up
     -- books that arrived since (Calibre, USB) every time the home screen builds.
     local updated = {}
     for name in pairs(ReadCollection.coll) do
