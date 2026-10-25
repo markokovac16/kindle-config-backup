@@ -21,7 +21,7 @@ redoes the Pi side from scratch.
 
 ## Manga
 
-`tools/manga_convert.py in.cbz "out/Title, Vol. N - Author.cbz"` (needs Pillow) converts a CBZ to
+`tools/manga_convert.py in.cbz "out/Title, Vol. N - Author.cbz"` (needs Pillow) converts a CBZ (or a folder of page images; for PDFs extract them first with `pdfimages -j book.pdf dir/p`) to
 greyscale pages fitted to the PW5's 1236x1648 screen, in natural chapter/page order. Put the result
 under `/mnt/us/documents/Manga/` so it gets the manga defaults; `2-comics.lua` flashes every 2 pages
 while a comic is open.

@@ -1,10 +1,17 @@
-# Greyscale + fit to the PW5 screen (1236x1648), pages renumbered in reading order.
-import sys, re, io, zipfile
+# CBZ (or a folder of page images) -> greyscale + fit to the PW5 screen (1236x1648), pages renumbered in reading order.
+import os, sys, re, io, zipfile
 from PIL import Image
 src, dst = sys.argv[1], sys.argv[2]
 W, H = 1236, 1648
-zin = zipfile.ZipFile(src)
-pages = [i for i in zin.infolist() if not i.is_dir() and i.filename.lower().endswith((".jpg", ".jpeg", ".png", ".webp"))]
+IMG = (".jpg", ".jpeg", ".png", ".webp")
+if os.path.isdir(src):  # a folder of page images, e.g. from `pdfimages -j book.pdf dir/p`
+    class _Dir:
+        def read(self, info): return open(os.path.join(src, info.filename), "rb").read()
+    zin = _Dir()
+    pages = [zipfile.ZipInfo(f) for f in os.listdir(src) if f.lower().endswith(IMG)]
+else:
+    zin = zipfile.ZipFile(src)
+    pages = [i for i in zin.infolist() if not i.is_dir() and i.filename.lower().endswith(IMG)]
 def key(i):
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", i.filename)]
 pages.sort(key=key)
