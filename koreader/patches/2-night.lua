@@ -19,6 +19,10 @@ end
 if not G_reader_settings:isTrue("night_mode_schedule_off") then
     G_reader_settings:makeFalse("autowarmth_control_nightmode")
     G_reader_settings:saveSetting("autowarmth_warmth", { 100, 100, 75, 50, 25, 0, 25, 50, 75, 100, 100 })
+    -- The screen was already inverted from the setting at startup, so un-invert it too,
+    -- or the Dark mode tile ends up showing the opposite of the screen.
+    local Screen = require("device").screen
+    if Screen.night_mode then Screen:toggleNightMode() end
     G_reader_settings:makeFalse("night_mode")
     G_reader_settings:makeTrue("night_mode_schedule_off")
 end
