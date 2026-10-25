@@ -11,3 +11,11 @@ Interactive Fiction plugin (frotz.koplugin 3.0.1, github kbarni/frotz.koplugin) 
 Marko didn't want it. To reinstall: copy `frotz.koplugin` to `koreader/plugins/`, `chmod +x
 binaries/armhf/*`, copy `ifgames/` to `koreader/ifgames/`. The home "Extras" entry with a game picker
 is in kindlehome git history (commit "Home: fix Text adventures game list crash").
+
+## panelsplus.koplugin, kopet.koplugin
+
+Panels+ 1.5.1 (github KristanLaimon/PanelsPlus, manga panel zoom on long-press) and KoPet 2.0
+(github PedroMachado1/kopet.koplugin, reading pet). Both removed from the Kindle 2026-10-25 at
+Marko's request. Note: KoPet calls `G_reader_settings:flush()` every 5 pages, rewriting the whole
+settings file on the slow /mnt/us FUSE mount, which made page turns noticeably laggy.
+To reinstall, copy the folder to `koreader/plugins/` and restart.

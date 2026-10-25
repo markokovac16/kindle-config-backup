@@ -27,3 +27,14 @@ end
 -- so swipes down from the top corners always reach the menus. Applied in memory every boot.
 G_defaults:saveSetting("DSWIPE_ZONE_LEFT_EDGE", { x = 0, y = 1/2, w = 1/8, h = 1/2 })
 G_defaults:saveSetting("DSWIPE_ZONE_RIGHT_EDGE", { x = 7/8, y = 1/2, w = 1/8, h = 1/2 })
+
+-- Leftovers of plugins tried and removed (KoPet, Panels+, Interactive Fiction), cleared once.
+if not G_reader_settings:isTrue("removed_plugins_cleaned") then
+    for _, key in ipairs{ "kopet_state", "panels_plus", "panelsplus" } do
+        G_reader_settings:delSetting(key)
+    end
+    local disabled = G_reader_settings:readSetting("plugins_disabled") or {}
+    disabled.kopet, disabled.panelsplus, disabled.frotz = nil, nil, nil
+    G_reader_settings:saveSetting("plugins_disabled", disabled)
+    G_reader_settings:makeTrue("removed_plugins_cleaned")
+end

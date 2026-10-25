@@ -750,10 +750,6 @@ function HomeScreen:showMoreMenu()
                 UIManager:close(dialog)
                 if self.ui.chess then self.ui.chess:startGame() end
             end }},
-            {{ text = _("Extras"), callback = function()
-                UIManager:close(dialog)
-                self:showExtras()
-            end }},
             {{ text = _("KOReader menu"), callback = function()
                 UIManager:close(dialog)
                 self.ui.menu:onShowMenu()
@@ -764,59 +760,6 @@ function HomeScreen:showMoreMenu()
                 self.ui.menu:exitOrRestart()
             end }},
         },
-    }
-    UIManager:show(dialog)
-end
-
--- Optional third-party plugins, switched on and off here (KOReader loads plugins at startup,
--- so a change needs a restart).
-local EXTRAS = {
-    { name = "panelsplus", label = _("Panel zoom for manga") },
-    { name = "kopet", label = _("Reading pet"), open = function(ui) ui:handleEvent(Event:new("KoPetShowPanel")) end },
-}
-
-function HomeScreen:showExtras()
-    local disabled = G_reader_settings:readSetting("plugins_disabled") or {}
-    local dialog
-    local rows = {}
-    for __, extra in ipairs(EXTRAS) do
-        local on = not disabled[extra.name]
-        local row = {{
-            text = (on and "✓  " or "✗  ") .. extra.label,
-            callback = function()
-                UIManager:close(dialog)
-                disabled[extra.name] = on or nil
-                G_reader_settings:saveSetting("plugins_disabled", disabled)
-                self.extras_changed = true
-                self:showExtras()
-            end,
-        }}
-        if extra.open then
-            table.insert(row, {
-                text = _("Open"),
-                enabled = on and self.ui[extra.name] ~= nil,
-                callback = function()
-                    UIManager:close(dialog)
-                    extra.open(self.ui, self)
-                end,
-            })
-        end
-        table.insert(rows, row)
-    end
-    table.insert(rows, {{
-        text = self.extras_changed and _("Restart to apply") or _("Close"),
-        callback = function()
-            UIManager:close(dialog)
-            if self.extras_changed then
-                self.extras_changed = nil
-                UIManager:askForRestart()
-            end
-        end,
-    }})
-    dialog = ButtonDialog:new{
-        title = _("Extras\nPanel zoom: long-press a panel in a manga"),
-        title_align = "center",
-        buttons = rows,
     }
     UIManager:show(dialog)
 end
