@@ -368,6 +368,8 @@ local SORT_LABELS = { recent = _("Recent"), title = _("Title"), author = _("Auth
 local SORT_NEXT = { recent = "title", title = "author", author = "recent" }
 
 function HomeScreen:init()
+    local sort = G_reader_settings:readSetting("kindlehome_sort")
+    if SORT_LABELS[sort] then self.sort = sort end -- the last sort chosen sticks
     self.width, self.height = Screen:getWidth(), Screen:getHeight()
     self.dimen = Geom:new{ x = 0, y = 0, w = self.width, h = self.height }
     self.pad = math.floor(self.width * 0.045)
@@ -565,7 +567,7 @@ end
 
 function HomeScreen:showTab(tab, filter)
     self.tab = tab
-    self.filter = filter or "all"
+    self.filter = filter or (tab == "library" and "collections" or "all") -- Library opens on Collections
     self.collection = nil
     self.page = 1
     self:refresh("flashui")
@@ -1032,7 +1034,7 @@ function HomeScreen:buildHome()
         local w = math.floor((self.cw - (cols - 1) * self.gap) / cols)
         local tiles = {}
         for _, f in ipairs(list) do table.insert(tiles, self:bookTile(f, w, math.floor(w * 1.45))) end
-        table.insert(vg, self:sectionHeader(_("Your library"), _("See all ›"), function() self:showTab("library") end))
+        table.insert(vg, self:sectionHeader(_("Your library"), _("See all ›"), function() self:showTab("library", "all") end))
         table.insert(vg, self:row(tiles, self.gap))
         table.insert(vg, VerticalSpan:new{ width = self.gap })
     end
@@ -1119,6 +1121,7 @@ function HomeScreen:chips()
             Tappable:new{
                 callback = self:later(function()
                     self.sort, self.page = SORT_NEXT[self.sort], 1
+                    G_reader_settings:saveSetting("kindlehome_sort", self.sort)
                     self:refresh(pageMode())
                 end),
                 TextWidget:new{ text = string.format(_("Sort: %s"), SORT_LABELS[self.sort]), face = face },
