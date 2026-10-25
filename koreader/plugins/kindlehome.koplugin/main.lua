@@ -422,6 +422,13 @@ function HomeScreen:loadData()
         end
     end
     ReadCollection:_read()
+    -- Folder-linked collections (e.g. Manga) only rescan when collection.lua changes; pick up
+    -- books that arrived since (Calibre, USB) every time the home screen builds.
+    local updated = {}
+    for name in pairs(ReadCollection.coll) do
+        if ReadCollection:updateCollectionFromFolder(name) > 0 then updated[name] = true end
+    end
+    if next(updated) then ReadCollection:write(updated) end
     self.collections = {}
     for name, coll in pairs(ReadCollection.coll) do
         local files = {}

@@ -38,3 +38,20 @@ function UIManager:ToggleNightMode(...)
     orig_night(self, ...)
     if comic_open then self.FULL_REFRESH_COUNT = COMIC_REFRESH end
 end
+
+-- A "Manga" collection linked to the Manga folder (subfolders included): new volumes join it
+-- automatically. Created once; rename or delete it like any collection.
+if not G_reader_settings:isTrue("manga_collection_applied") then
+    local ReadCollection = require("readcollection")
+    local lfs = require("libs/libkoreader-lfs")
+    local dir = "/mnt/us/documents/Manga"
+    if lfs.attributes(dir, "mode") ~= "directory" then lfs.mkdir(dir) end
+    ReadCollection:_read()
+    if not ReadCollection.coll["Manga"] then
+        ReadCollection:addCollection("Manga")
+    end
+    ReadCollection.coll_settings["Manga"].folders = { [dir] = { subfolders = true, scan_on_show = true } }
+    ReadCollection:updateCollectionFromFolder("Manga")
+    ReadCollection:write({ Manga = true })
+    G_reader_settings:makeTrue("manga_collection_applied")
+end
