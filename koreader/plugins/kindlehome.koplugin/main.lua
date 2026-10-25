@@ -39,6 +39,7 @@ local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
+local DataStorage = require("datastorage")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
 local util = require("util")
@@ -765,7 +766,7 @@ end
 -- so a change needs a restart).
 local EXTRAS = {
     { name = "panelsplus", label = _("Panel zoom for manga") },
-    { name = "frotz", label = _("Text adventures"), open = function(ui) ui.frotz:_openFileBrowser() end },
+    { name = "frotz", label = _("Text adventures"), open = function(ui, home) home:showAdventures() end },
     { name = "kopet", label = _("Reading pet"), open = function(ui) ui:handleEvent(Event:new("KoPetShowPanel")) end },
 }
 
@@ -791,7 +792,7 @@ function HomeScreen:showExtras()
                 enabled = on and self.ui[extra.name] ~= nil,
                 callback = function()
                     UIManager:close(dialog)
-                    extra.open(self.ui)
+                    extra.open(self.ui, self)
                 end,
             })
         end
@@ -808,10 +809,44 @@ function HomeScreen:showExtras()
         end,
     }})
     dialog = ButtonDialog:new{
-        title = _("Extras\nPanel zoom: tap a manga page with two fingers"),
+        title = _("Extras\nPanel zoom: long-press a panel in a manga"),
         title_align = "center",
         buttons = rows,
     }
+    UIManager:show(dialog)
+end
+
+-- One button per game in koreader/ifgames/<Game>/, so nobody has to long-press a file.
+function HomeScreen:showAdventures()
+    local root = DataStorage:getDataDir() .. "/ifgames"
+    local games = {}
+    if lfs.attributes(root, "mode") ~= "directory" then root = nil end
+    for name in root and lfs.dir(root) or function() end do
+        local dir = root .. "/" .. name
+        if name:sub(1, 1) ~= "." and lfs.attributes(dir, "mode") == "directory" then
+            for file in lfs.dir(dir) do
+                if file:match("%.z%d$") or file:match("%.zblorb$") or file:match("%.ulx$")
+                        or file:match("%.gblorb$") or file:match("%.t3$") or file:match("%.gam$") then
+                    table.insert(games, { name = name, path = dir .. "/" .. file })
+                    break
+                end
+            end
+        end
+    end
+    table.sort(games, function(a, b) return a.name < b.name end)
+    local dialog
+    local rows = {}
+    for __, game in ipairs(games) do
+        table.insert(rows, {{ text = game.name, callback = function()
+            UIManager:close(dialog)
+            self.ui.frotz:_startGame(game.path)
+        end }})
+    end
+    table.insert(rows, {{ text = _("Other games…"), callback = function()
+        UIManager:close(dialog)
+        self.ui.frotz:_openFileBrowser()
+    end }})
+    dialog = ButtonDialog:new{ title = _("Text adventures"), title_align = "center", buttons = rows }
     UIManager:show(dialog)
 end
 
