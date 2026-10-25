@@ -732,6 +732,10 @@ function HomeScreen:showMoreMenu()
              { text = _("Chess"), callback = function()
                 UIManager:close(dialog)
                 if self.ui.chess then self.ui.chess:startGame() end
+            end },
+             { text = _("DOOM"), callback = function()
+                UIManager:close(dialog)
+                if self.ui.doom then self.ui.doom:startGame() end
             end }},
             {{ text = _("KOReader menu"), callback = function()
                 UIManager:close(dialog)
