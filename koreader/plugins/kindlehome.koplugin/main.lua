@@ -12,6 +12,7 @@ local Blitbuffer = require("ffi/blitbuffer")
 local BookList = require("ui/widget/booklist")
 local BottomContainer = require("ui/widget/container/bottomcontainer")
 local ButtonDialog = require("ui/widget/buttondialog")
+local Notification = require("ui/widget/notification")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local Device = require("device")
 local Dispatcher = require("dispatcher")
@@ -154,7 +155,11 @@ local function lastReadText(t)
     return os.date("%d %b", t)
 end
 
--- Today's reading time, pages read since Monday and the daily streak, from the statistics plugin's DB.
+-- Minutes a day that count towards the streak.
+local function dailyGoal() return G_reader_settings:readSetting("kindlehome_daily_goal_min") or 30 end
+
+-- Today's reading time, pages read since Monday and the streak of days that met the daily goal,
+-- from the statistics plugin's DB.
 local function readingStats()
     local ok, res = pcall(function()
         local path = require("datastorage"):getSettingsDir() .. "/statistics.sqlite3"
@@ -170,9 +175,10 @@ local function readingStats()
             "SELECT coalesce(sum(duration), 0) FROM page_stat_data WHERE start_time >= " .. today))
         local pages = tonumber(conn:rowexec(
             "SELECT count(*) FROM (SELECT DISTINCT id_book, page FROM page_stat_data WHERE start_time >= " .. week .. ")"))
-        -- A day counts once there's at least a minute of reading.
+        -- A day counts once it meets the daily goal.
         local days = conn:exec("SELECT date(start_time, 'unixepoch', 'localtime') AS d FROM page_stat_data"
-            .. " WHERE start_time >= " .. (today - 400 * 86400) .. " GROUP BY d HAVING sum(duration) >= 60")
+            .. " WHERE start_time >= " .. (today - 400 * 86400) .. " GROUP BY d HAVING sum(duration) >= "
+            .. dailyGoal() * 60)
         conn:close()
         local read = {}
         for _, d in ipairs(days and days[1] or {}) do read[d] = true end
@@ -1088,7 +1094,8 @@ function HomeScreen:statsRow(w)
     end
     return HorizontalGroup:new{
         align = "top",
-        cell(durationText(st.today), _("Today")),
+        cell(st.today >= dailyGoal() * 60 and "✓ " .. durationText(st.today)
+            or string.format(_("%d / %d min"), math.floor(st.today / 60), dailyGoal()), _("Daily goal")),
         cell(st.streak == 1 and _("1 day") or string.format(_("%d days"), st.streak), _("Streak")),
         cell(tostring(st.week_pages), _("Pages this week")),
     }
@@ -1688,6 +1695,43 @@ function KindleHome:onReaderReady()
             handler = function(ges) return ges.direction == "south" or nil end,
         },
     })
+    self:startGoalTracking()
+end
+
+-- Daily goal while reading: today's time so far comes from the stats DB when the book opens, then
+-- each page turn adds the time spent on the page the way the statistics plugin counts it
+-- (under 5 s is skipped, over 2 min counts as 2 min). Crossing the goal shows a short note, once a day.
+function KindleHome:startGoalTracking()
+    self.goal = nil
+    local today = os.date("%Y-%m-%d")
+    if G_reader_settings:readSetting("kindlehome_goal_done") == today then return end
+    if self.ui.statistics and self.ui.statistics.insertDB then pcall(self.ui.statistics.insertDB, self.ui.statistics) end
+    local st = readingStats()
+    if not st or st.today >= dailyGoal() * 60 then return end
+    self.goal = { day = today, secs = st.today, streak = st.streak, last = os.time() }
+end
+
+function KindleHome:onPageUpdate()
+    local g = self.goal
+    if not g then return end
+    local now = os.time()
+    if os.date("%Y-%m-%d", now) ~= g.day then return self:startGoalTracking() end
+    local spent = now - g.last
+    g.last = now
+    if spent < 5 then return end
+    g.secs = g.secs + math.min(spent, 120)
+    if g.secs < dailyGoal() * 60 then return end
+    self.goal = nil
+    G_reader_settings:saveSetting("kindlehome_goal_done", g.day)
+    local streak = g.streak + 1
+    Notification:notify(string.format(_("Daily goal reached · %s"),
+        streak == 1 and _("1-day streak") or string.format(_("%d-day streak"), streak)),
+        Notification.SOURCE_ALWAYS_SHOW)
+end
+
+function KindleHome:onResume()
+    -- Time asleep isn't reading; a new day starts the count again.
+    if self.ui.document then self:startGoalTracking() end
 end
 
 function KindleHome:showHome(tab)
