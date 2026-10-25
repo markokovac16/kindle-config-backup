@@ -620,6 +620,18 @@ function HomeScreen:later(fn)
     return function() UIManager:nextTick(fn) end
 end
 
+-- The Wi-Fi icon only shows while Wi-Fi is on; redraw the status bar when that changes.
+function HomeScreen:onNetworkConnected()
+    if not UIManager:isWidgetShown(self) then return end
+    UIManager:nextTick(function()
+        if not UIManager:isWidgetShown(self) then return end
+        self:render()
+        local region = Geom:new{ x = 0, y = 0, w = self.width, h = self.status_h }
+        UIManager:setDirty(self, function() return einkMode(region), region end)
+    end)
+end
+HomeScreen.onNetworkDisconnected = HomeScreen.onNetworkConnected
+
 function HomeScreen:onShowingReader()
     UIManager:close(self)
 end
