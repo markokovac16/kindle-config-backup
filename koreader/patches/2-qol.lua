@@ -22,3 +22,8 @@ if not G_reader_settings:isTrue("qol_tweaks_applied") then
     G_reader_settings:saveSetting("inbox_dir", "/mnt/us/documents")
     G_reader_settings:makeTrue("qol_tweaks_applied")
 end
+
+-- Brightness (left edge) and warmth (right edge) swipes only in the lower half,
+-- so swipes down from the top corners always reach the menus. Applied in memory every boot.
+G_defaults:saveSetting("DSWIPE_ZONE_LEFT_EDGE", { x = 0, y = 1/2, w = 1/8, h = 1/2 })
+G_defaults:saveSetting("DSWIPE_ZONE_RIGHT_EDGE", { x = 7/8, y = 1/2, w = 1/8, h = 1/2 })
