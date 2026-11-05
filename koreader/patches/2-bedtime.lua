@@ -1,5 +1,5 @@
--- Bedtime dimming: the first time the light is on after 21:00, it's lowered once, to 60% of
--- what it was. Nothing else happens that night, whatever brightness gets picked after that.
+-- Bedtime dimming: the first time the light is on after 21:00, it's lowered once, to level 6
+-- (never raised if it was already lower). Nothing else happens that night, whatever brightness gets picked after that.
 -- In the morning the old level comes back, but only if the light is still exactly where the
 -- dimming left it (a level chosen by hand is never undone).
 local Device = require("device")
@@ -10,7 +10,7 @@ if not Device:hasFrontlight() then return end
 local powerd = Device.powerd
 
 local EVENING, MORNING = 21, 6 -- hours
-local FACTOR = 0.6
+local LEVEL = 6 -- brightness at bedtime
 local TICK = 300 -- seconds between checks while awake
 
 local function tick()
@@ -23,7 +23,7 @@ local function tick()
         -- An evening and the early hours after it are one night.
         local night = os.date("%Y-%m-%d", now - MORNING * 3600)
         if st.night == night then return end
-        local target = math.max(1, math.floor(cur * FACTOR + 0.5))
+        local target = math.min(cur, LEVEL)
         if target < cur then powerd:setIntensity(target) end
         G_reader_settings:saveSetting("bedtime_dimming",
             { night = night, base = cur, dimmed = powerd:frontlightIntensity() })

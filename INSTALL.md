@@ -149,7 +149,7 @@ What each patch does:
 | `2-speed` | Turns off 15 built-in plugins that aren't used (OPDS, Wallabag, News, Terminal…). Re-enable any of them under Plugin management. |
 | `2-qol` | Reading footer with chapter time left and %. Sleep after 10 min, never auto power-off. Calibre wireless sends into `documents/`. Brightness (left edge) and warmth (right edge) swipes only in the lower half of the screen, so swipes from the top always reach the menus. |
 | `2-night` | Warmth follows the sun (Zagreb coordinates; change under Settings → Auto warmth). Dark mode is **never** switched on automatically, only by hand. |
-| `2-bedtime` | The first time the light is on after 21:00, brightness drops **once**, to 60%. A level you pick by hand is never overridden. The old level comes back in the morning, but only if you didn't change it. |
+| `2-bedtime` | The first time the light is on after 21:00, brightness drops **once**, to level 6. A level you pick by hand is never overridden. The old level comes back in the morning, but only if you didn't change it. |
 | `2-comics` | Manga/comics: a full refresh every 2 pages against ghosting. At the end of a volume it marks it read and opens the next one in the folder (natural sort, so Vol. 10 comes after Vol. 9). |
 | `2-titles` | Clean titles and authors for books with messy metadata, written as KOReader custom metadata. Bump `FIXES_VERSION` after adding fixes. |
 | `2-update-guard` | Tapping KOReader's Update first warns "tested on v2026.07.1". Test new versions before updating, then bump `TESTED`. |
