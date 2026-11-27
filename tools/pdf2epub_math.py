@@ -89,6 +89,42 @@ def crop(gray, x0, y0, x1, y1):
     return gray[Y0:Y1, X0:X1], (X0, Y0, X1, Y1)
 
 
+def strip_foreign(gray, box, size):
+    """copy of the crop with ink that mainly belongs to neighbouring text (an 'f' hook reaching
+    into the math box) whitened: components seeded on the left/right crop edge that have more
+    pixels outside the crop than inside"""
+    X0, Y0, X1, Y1 = box
+    pad = int(0.6 * size * Z)
+    WX0, WX1 = max(0, X0 - pad), min(gray.shape[1], X1 + pad)
+    win = gray[Y0:Y1, WX0:WX1] < 235
+    h, w = win.shape
+    cx0, cx1 = X0 - WX0, X1 - WX0
+    seen = np.zeros_like(win)
+    out = gray[Y0:Y1, X0:X1].copy()
+    for col in (cx0, cx1 - 1):
+        if col < 0 or col >= w:
+            continue
+        for r0 in range(h):
+            if not win[r0, col] or seen[r0, col]:
+                continue
+            stack, comp = [(r0, col)], []
+            seen[r0, col] = True
+            while stack:
+                r, c = stack.pop()
+                comp.append((r, c))
+                for dr in (-1, 0, 1):
+                    for dc in (-1, 0, 1):
+                        rr, cc = r + dr, c + dc
+                        if 0 <= rr < h and 0 <= cc < w and win[rr, cc] and not seen[rr, cc]:
+                            seen[rr, cc] = True
+                            stack.append((rr, cc))
+            inside = [(r, c) for r, c in comp if cx0 <= c < cx1]
+            if len(comp) - len(inside) > len(inside):
+                for r, c in inside:
+                    out[r, c - cx0] = 255
+    return out
+
+
 items = []   # flat stream: dicts with kind text/img/pagebreak/anchor
 
 
@@ -110,6 +146,46 @@ def process_page(pno):
                     x0, y0, x1, y1 = c["bbox"]
                     chars.append(dict(c=c["c"], f=s["font"], size=s["size"], x0=x0, y0=y0, x1=x1, y1=y1,
                                       ox=c["origin"][0], oy=c["origin"][1], text=is_text_font(s["font"])))
+    for c in chars:
+        if c["text"] or not ("CMEX" in c["f"] or c["c"] == "√"):
+            continue
+        w = c["x1"] - c["x0"]
+        X0, X1 = int((c["x0"] + 0.2 * w) * Z), max(int((c["x0"] + 0.2 * w) * Z) + 1, int((c["x1"] - 0.2 * w) * Z))
+        r = int((c["oy"] - 0.04 * c["size"]) * Z)   # these glyphs hang from their origin
+        rmax = min(ink.shape[0], int((c["oy"] + 4 * c["size"]) * Z))
+        while r < int((c["oy"] + 1.0 * c["size"]) * Z) and r < rmax and not ink[r, X0:X1].any():
+            r += 1
+        if r >= rmax or not ink[r, X0:X1].any():
+            continue
+        top, gap = r, 0
+        while r + 1 < rmax and gap <= 1:
+            r += 1
+            gap = 0 if ink[r, X0:X1].any() else gap + 1
+        c["y0"], c["y1"] = top / Z, (r - gap + 1) / Z
+
+    # accents (hat, tilde, bar, dot, vector arrow) have advance boxes wider than their ink and
+    # reach over the next letter: shrink them to the ink above x-height
+    for c in chars:
+        if c["text"] or c["c"] not in "ˆˇ˜¯˙¨´`˘\u20d7\u0302\u0303\u0304\u0307":
+            continue
+        ra, rb = int(c["y0"] * Z), int((c["oy"] - 0.5 * c["size"]) * Z)
+        Xa, Xb = int(c["x0"] * Z), int(np.ceil(c["x1"] * Z))
+        if rb <= ra or Xb <= Xa:
+            continue
+        colink = ink[ra:rb, Xa:Xb].any(axis=0)
+        idx = np.where(colink)[0]
+        if len(idx) == 0:
+            continue
+        mid = (Xb - Xa) // 2
+        # contiguous run of ink columns nearest the box centre
+        runs, st = [], idx[0]
+        for a, b in zip(idx, idx[1:]):
+            if b - a > 1:
+                runs.append((st, a)); st = b
+        runs.append((st, idx[-1]))
+        a, b = min(runs, key=lambda r: 0 if r[0] <= mid <= r[1] else min(abs(r[0] - mid), abs(r[1] - mid)))
+        c["x0"], c["x1"] = (Xa + a) / Z, (Xa + b + 1) / Z
+
     def is_bg(d):
         f = d.get("fill")
         return f is not None and min(f) > 0.75 and d["rect"].height > 1.5 * BODY and not d.get("color")
@@ -137,6 +213,112 @@ def process_page(pno):
     chars = [c for c in chars if c["y0"] >= top_cut - 0.5 and c["y1"] <= bot_cut + 0.5 or
              (top_cut - 0.5 <= (c["y0"] + c["y1"]) / 2 <= bot_cut + 0.5)]
     chars = [c for c in chars if top_cut <= (c["y0"] + c["y1"]) / 2 <= bot_cut]
+
+    # ---- figures/tables with text running beside them: cut out as their own image ----
+    sides = []
+    gray_m = gray
+    sf = [c for c in chars if c["text"]]
+    if sf:
+        tl, tr = min(c["x0"] for c in sf), max(c["x1"] for c in sf)
+        rects = [fitz.Rect(r) for r in pimgs] + [fitz.Rect(r) for r in draws if not (r.height < 1.5 and r.width < 3 * BODY)]
+        rects = [r for r in rects if r.y0 >= top_cut and r.y1 <= bot_cut]
+        groups = []
+        for r in rects:
+            r = fitz.Rect(r)
+            merged_any = True
+            while merged_any:
+                merged_any = False
+                for g in groups:
+                    if fitz.Rect(g.x0 - 6, g.y0 - 1.5 * BODY, g.x1 + 6, g.y1 + 1.5 * BODY).intersects(r):
+                        r |= g; groups.remove(g); merged_any = True; break
+            groups.append(r)
+        for g in groups:
+            if g.width > 0.65 * (tr - tl) or g.width < 3 * BODY:
+                continue
+            if g.height < 1.5 * BODY:
+                # only rules: a table at the side has several rules of the same width
+                if not (g.x0 > tl + 0.3 * (tr - tl) or g.x1 < tr - 0.3 * (tr - tl)):
+                    continue
+                same = [r for r in rects if r.height < 1.5 and abs(r.x0 - g.x0) < 2 and abs(r.x1 - g.x1) < 2
+                        and abs(r.y0 - g.y0) < 15 * BODY]
+                if len(same) < 2:
+                    continue
+            right_side = (g.x0 + g.x1) / 2 > (tl + tr) / 2
+            c0, c1 = (g.x0 - 6, W) if right_side else (0, g.x1 + 6)
+            # grow the column vertically through its own ink (labels, caption)
+            Xa, Xb = int(max(0, c0) * Z), int(min(W, c1) * Z)
+            colrows = ink[:, Xa:Xb].any(axis=1)
+            ya, yb = int(g.y0 * Z), int(g.y1 * Z)
+            lim0, lim1 = int(top_cut * Z) + 1, int(bot_cut * Z) - 1
+            gapmax = int(1.2 * BODY * Z)
+            k, gap = ya, 0
+            while k - 1 > lim0 and gap < gapmax:
+                k -= 1; gap = 0 if colrows[k] else gap + 1
+            ya = k + gap
+            k, gap = yb, 0
+            while k + 1 < lim1 and gap < gapmax:
+                k += 1; gap = 0 if colrows[k] else gap + 1
+            yb = k - gap
+            # full-width lines (a display equation under the figure) end the column
+            bnd = c0 if right_side else c1
+            def crosses(c):
+                if c["x0"] < bnd < c["x1"]:
+                    return True
+                # above/below the figure, ink right next to the boundary means a line running across
+                if not c["text"] and (c["y1"] <= g.y0 + 0.5 or c["y0"] >= g.y1 - 0.5):
+                    return (bnd - BODY < c["x1"] <= bnd) if right_side else (bnd <= c["x0"] < bnd + BODY)
+                return False
+            strad = [c for c in chars if crosses(c) and ya / Z <= (c["y0"] + c["y1"]) / 2 <= (yb + 1) / Z]
+            above = [c["y1"] for c in strad if c["y1"] <= g.y0 + 0.5]
+            below = [c["y0"] for c in strad if c["y0"] >= g.y1 - 0.5]
+            if len(above) + len(below) < len(strad):
+                continue  # something runs across the figure itself
+            # cut inside a blank gap of the column, so nothing (a fraction's numerator) is split
+            if above:
+                k = min(yb, int(np.ceil(max(above) * Z)))
+                while k < yb and colrows[k]:
+                    k += 1
+                while k < yb and not colrows[k]:
+                    k += 1
+                ya = max(ya, k)
+            if below:
+                k = max(ya, int(min(below) * Z))
+                while k > ya and colrows[k]:
+                    k -= 1
+                while k > ya and not colrows[k]:
+                    k -= 1
+                yb = min(yb, k)
+            if yb - ya < 1.5 * BODY * Z:
+                continue
+            y0s, y1s = ya / Z, (yb + 1) / Z
+            inside = lambda c: y0s <= (c["y0"] + c["y1"]) / 2 <= y1s
+            beside = [c for c in sf if inside(c) and c["c"].isalpha() and (c["x1"] < c0 if right_side else c["x0"] > c1)]
+            straddle = [c for c in chars if inside(c) and c["x0"] < (c0 if right_side else c1) < c["x1"]]
+            if len(beside) < 20 or straddle:
+                continue
+            # the text beside must be running prose, not other columns of a table
+            per_line = collections.Counter(round(c["oy"]) for c in beside)
+            if sum(1 for v in per_line.values() if v >= 15) < 2:
+                continue
+            cols = np.where(ink[ya:yb + 1, Xa:Xb].any(axis=0))[0]
+            if len(cols) == 0:
+                continue
+            fx0, fx1 = (Xa + cols[0]) / Z - 1, (Xa + cols[-1] + 1) / Z + 1
+            arr, (X0, Yc0, X1, Yc1) = crop(gray, fx0, y0s - 1, fx1, y1s + 1)
+            covered[Yc0:Yc1, X0:X1] = True
+            name, w, h = save_png(arr)
+            loc = max(c["x1"] for c in beside) if right_side else min(c["x0"] for c in beside)
+            sides.append(dict(kind="img", name=name, w_pt=w / Z, h_pt=h / Z, y0=y0s, y1=y1s, x0=fx0, x1=fx1,
+                              pu=1.0, pd=1.0, page=pno, side=(right_side, loc)))
+            if gray_m is gray:
+                gray_m = gray.copy()
+            gray_m[Yc0:Yc1, X0:X1] = 255
+            ink[Yc0:Yc1, X0:X1] = False
+            chars = [c for c in chars if not (inside(c) and (c["x0"] >= c0 if right_side else c["x1"] <= c1))]
+            draws = [r for r in draws if not fitz.Rect(c0, y0s - 1, c1, y1s + 1).contains(r)]
+            pimgs = [r for r in pimgs if not fitz.Rect(c0, y0s - 1, c1, y1s + 1).contains(r)]
+    gray_c = gray
+    gray = gray_m
 
     # ---- bands from the ink profile ----
     r0, r1 = int(top_cut * Z) + 1, int(bot_cut * Z) - 1
@@ -259,12 +441,25 @@ def process_page(pno):
             for (X0, Yc0, X1, Yc1) in line.pop("cover"):
                 covered[Yc0:Yc1, X0:X1] = True
             line.update(kind="text", page=pno, left=left, right=right)
+            for sd in sides:
+                lh = 1.3 * line["size"]
+                clear = line["x1"] < sd["x0"] if sd["side"][0] else line["x0"] > sd["x1"]
+                if sd["y0"] - 2 <= line["base"] <= sd["y1"] + 2 or (clear and sd["y0"] - lh <= line["base"] <= sd["y1"] + lh):
+                    if sd["side"][0]:
+                        line["right"] = sd["side"][1]
+                    else:
+                        line["left"] = sd["side"][1]
             out.append(line)
+    for sd in sides:
+        k = 0
+        while k < len(out) and out[k]["y1"] <= sd["y0"] + 2:
+            k += 1
+        out.insert(k, sd)
     # merge consecutive block images that are close (multi-line displays keep their alignment)
     merged = []
     for it in out:
-        if (it["kind"] == "img" and merged and merged[-1]["kind"] == "img"
-                and it["y0"] - merged[-1]["y1"] < 1.0 * BODY):
+        if (it["kind"] == "img" and merged and merged[-1]["kind"] == "img" and "side" not in it
+                and "side" not in merged[-1] and it["y0"] - merged[-1]["y1"] < 1.0 * BODY):
             m = merged[-1]
             x0 = min(m["x0"], it["x0"], left) - 1.0
             x1 = max(m["x1"], it["x1"]) + 1.0
@@ -274,6 +469,25 @@ def process_page(pno):
             m.update(name=name, w_pt=w / Z, h_pt=h / Z, y1=it["y1"], x0=min(m["x0"], it["x0"]), x1=max(m["x1"], it["x1"]))
         else:
             merged.append(it)
+    # footnotes: a short rule at the left in the lower half, with only small text below it
+    fn_y = None
+    for r in draws:
+        if r.height < 1.2 and 0.15 * (right - left) < r.width < 0.5 * (right - left) and abs(r.x0 - left) < 3 and r.y0 > H * 0.45:
+            below = [it for it in merged if it["y0"] > r.y1 - 0.5]
+            txt = [it for it in below if it["kind"] == "text"]
+            if txt and all(it["size"] < BODY * 0.93 for it in txt):
+                fn_y = r.y1
+                covered[int((r.y0 - 1) * Z):int(np.ceil((r.y1 + 1) * Z)), int((r.x0 - 1) * Z):int(np.ceil((r.x1 + 1) * Z))] = True
+                break
+    if fn_y is not None:
+        keep = []
+        for it in merged:
+            if it["y1"] <= fn_y + 0.5 and it["y0"] >= fn_y - 2.5 and it["kind"] == "img" and it["h_pt"] < 4:
+                continue  # the rule itself
+            if it["y0"] > fn_y - 0.5:
+                it["fn"] = True
+            keep.append(it)
+        merged = keep
     # coverage check
     left_ink = int((ink & ~covered).sum())
     ntext = sum(1 for i in merged if i["kind"] == "text"); nimg = len(merged) - ntext
@@ -304,7 +518,7 @@ def classify(bd, draws, pimgs, left, right, gray):
         if abs(c["oy"] - base) > 0.12 * size or c["size"] < 0.9 * size:
             c["text"] = False
     tx = [c for c in cs if c["text"]]
-    off = [c for c in cs if not c["text"] and is_text_font(c["f"])]
+    off = [c for c in cs if not c["text"] and is_text_font(c["f"]) and c["size"] >= 0.9 * size]
     if len([c for c in off if c["c"].isalpha()]) >= 3:
         return None          # two lines of text merged into one band
     if any(not ok_char(c["c"]) for c in tx):
@@ -345,11 +559,16 @@ def classify(bd, draws, pimgs, left, right, gray):
     for r in draws:
         if r.y1 < bd["y0"] - 0.5 or r.y0 > bd["y1"] + 0.5:
             continue
-        if not any(r.x0 >= a - 1.5 and r.x1 <= b + 1.5 for a, b in mranges):
+        inside = any(r.x0 >= a - 4 and r.x1 <= b + 4 for a, b in mranges)
+        # a rule that starts in a math cluster and runs over no text (radical bar over a blank)
+        tsegs = [(t["x0"], t["x1"]) for t in segs if t["k"] == "t"]
+        hangs = (any(a - 1 <= r.x0 <= b + 1 for a, b in mranges)
+                 and not any(min(r.x1, b) - max(r.x0, a) > 0.5 for a, b in tsegs))
+        if not (inside or hangs):
             return None
         # widen the cluster to the drawing
         for s in segs:
-            if s["k"] == "m" and r.x0 >= s["x0"] - 1.5 and r.x1 <= s["x1"] + 1.5:
+            if s["k"] == "m" and (r.x0 >= s["x0"] - 4 and r.x1 <= s["x1"] + 4 or s["x0"] - 1 <= r.x0 <= s["x1"] + 1):
                 s["x0"] = min(s["x0"], r.x0); s["x1"] = max(s["x1"], r.x1)
     # ink just beyond a math cluster (arrow heads, wide accents): grow to the ink, stopping at text
     Y0, Y1 = int(bd["y0"] * Z), int(np.ceil(bd["y1"] * Z))
@@ -400,6 +619,7 @@ def classify(bd, draws, pimgs, left, right, gray):
         else:
             x0, x1 = s["x0"] - 0.4, s["x1"] + 0.4
             arr, box = crop(gray, x0, bd["y0"] - min(0.5, bd["pu"]), x1, bd["y1"] + min(0.5, bd["pd"]))
+            arr = strip_foreign(gray, box, size)
             cover.append(box)
             name, w, h = save_png(arr)
             hpt = h / Z
@@ -437,6 +657,33 @@ for its in pages_items.values():
 
 # ---------- assemble paragraphs ----------
 LABEL = re.compile(r"^(\d+\.|\(\w{1,4}\)|•|[a-z]\)|\[\d+\]|Q\d|E\d|P\d)")
+
+
+try:
+    DICT = set(w.strip().lower() for w in open("/usr/share/dict/words"))
+except OSError:
+    DICT = set()
+
+
+def in_dict(w):
+    if w in DICT:
+        return True
+    for suf in ("s", "es", "ed", "d", "ing", "ly", "er", "ers", "ation", "ations"):
+        if w.endswith(suf) and (w[: -len(suf)] in DICT or w[: -len(suf)] + "e" in DICT):
+            return True
+    return False
+
+
+def keep_hyphen(w1, w2, joined, compound, chain):
+    if chain:
+        return True                       # length-and-direction, onion-slice-into-...
+    if vocab.get(joined, 0) > 0:
+        return False                      # the book writes it unbroken elsewhere
+    if vocab.get(compound, 0) > 0:
+        return True
+    if in_dict(joined):
+        return False
+    return len(w1) >= 3 and len(w2) >= 2 and in_dict(w1.lower()) and in_dict(w2.lower())
 
 
 def esc(s):
@@ -525,6 +772,15 @@ page_ids = []
 def flush():
     global para
     if para is None:
+        emit_fn()
+        return
+    _flush()
+    emit_fn()
+
+
+def _flush():
+    global para
+    if para is None:
         return
     ls = para["lines"]
     first = ls[0]
@@ -561,12 +817,14 @@ def flush():
             prev = ls[i - 1]
             lt, ft = last_text(prev["segs"]), first_text(l["segs"])
             if lt and lt.endswith("-") and len(lt) >= 2 and lt[-2].islower() and ft and ft[:1].islower():
-                w1 = re.findall(r"[A-Za-z]+-$", lt)
-                w2 = re.findall(r"^[A-Za-z]+", ft)
-                w1 = w1[0][:-1] if w1 else ""
-                w2 = w2[0] if w2 else ""
+                w1m = re.findall(r"([A-Za-z]+-)*[A-Za-z]+-$", lt)
+                w1full = re.search(r"([A-Za-z]+-)*[A-Za-z]+-$", lt).group(0) if w1m else ""
+                w2full = re.findall(r"^[A-Za-z]+(?:-[A-Za-z]+)*", ft)
+                w2full = w2full[0] if w2full else ""
+                w1 = w1full[:-1].split("-")[-1] if w1full else ""
+                w2 = w2full.split("-")[0]
                 joined, compound = (w1 + w2).lower(), (w1 + "-" + w2).lower()
-                if vocab.get(compound, 0) > 0 and vocab.get(joined, 0) == 0:
+                if keep_hyphen(w1, w2, joined, compound, w1full.count("-") > 1 or "-" in w2full):
                     out += h          # real compound: keep the hyphen
                 else:
                     k = out.rfind("-")
@@ -591,12 +849,49 @@ def flush():
     para = None
 
 
+fn_buf = []
+
+
+def emit_fn():
+    global fn_buf
+    for kind, h in fn_buf:
+        blocks.append(h)
+    fn_buf = []
+
+
 prev = None
 for pno, its in pages_items.items():
     pids = ["pg%d" % pno]
     page_ids.append((pids[0], doc[pno].get_label() or str(pno + 1)))
     anc = sorted(anchors.get(pno, []))
     first_on_page = True
+    fns = [it for it in its if it.get("fn")]
+    its = [it for it in its if not it.get("fn")]
+    if fns:
+        fl = []
+        for it in fns:
+            if it["kind"] == "img":
+                fl.append('<div class="d fn"><img src="img/%s" alt="" style="width:%.2fem"/></div>' % (it["name"], MATH_SCALE * it["w_pt"] / BODY))
+            else:
+                if fl and fl[-1][0] == "t" and not LABEL.match(it["starts"]) and not it["segs"][0][0] == "m" and it["x0"] <= it["left"] + 1 and False:
+                    pass
+                fl.append(("t", it))
+        # group footnote text lines into paragraphs: a new footnote starts with its marker (indented)
+        html_fn, cur_l = [], []
+        def fn_flush():
+            if cur_l:
+                html_fn.append('<p class="fn">%s</p>' % " ".join(seg_html(l["segs"]) for l in cur_l))
+                cur_l.clear()
+        for x in fl:
+            if isinstance(x, str):
+                fn_flush(); html_fn.append(x)
+            else:
+                l = x[1]
+                if cur_l and l["x0"] > cur_l[-1]["x0"] + 2:
+                    fn_flush()
+                cur_l.append(l)
+        fn_flush()
+        fn_buf.extend(("fn", h) for h in html_fn)
     for it in its:
         # toc anchors that start before this item
         while anc and anc[0][0] <= it["y0"] + 3:
@@ -610,6 +905,11 @@ for pno, its in pages_items.items():
             flush() if para else None
             blocks.append('<a id="%s"></a>' % aid)
             prev = None
+        if it["kind"] == "img" and "side" in it:
+            # figure beside running text: show it after the paragraph instead of splitting it
+            fn_buf.append(("side", '<div class="d"><img src="img/%s" alt="" style="width:%.2fem"/></div>'
+                           % (it["name"], MATH_SCALE * it["w_pt"] / BODY)))
+            continue
         if it["kind"] == "img":
             flush()
             ids = "".join('<span id="%s"></span>' % p for p in pids); pids = []
@@ -630,7 +930,7 @@ for pno, its in pages_items.items():
                     ind = False   # continuation of a list item
                 elif ind and in_list:
                     ind = False
-                same = abs(it["size"] - prev["size"]) < 0.4 and it["bold"] == prev["bold"]
+                same = abs(it["size"] - prev["size"]) < 0.4
                 if gap_ok and full and not label and not ind and same:
                     new = False
             if new:
@@ -643,6 +943,7 @@ for pno, its in pages_items.items():
         flush()
         blocks.append("".join('<span id="%s"></span>' % p for p in pids))
 flush()
+emit_fn()
 
 # ---------- write EPUB ----------
 CSS = """body{margin:0}
@@ -653,6 +954,9 @@ h1{font-size:1.6em}h2{font-size:1.3em}h3{font-size:1.1em}
 div.d{margin:0.3em 0;text-indent:0;text-align:left}
 div.d img{max-width:100%}
 img.m{max-width:100%}
+p.fn{font-size:0.8em;text-indent:0;margin:0.2em 0 0.2em 0;border-top:1px solid #888;padding-top:0.15em}
+p.fn+p.fn{border-top:none;padding-top:0}
+div.fn{margin:0.1em 0}
 code{font-family:monospace}
 span.sc{font-variant:small-caps}
 """
