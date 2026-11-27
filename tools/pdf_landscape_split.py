@@ -4,7 +4,7 @@ Each view is the original page with a new MediaBox, so text stays vector. Conten
 is painted over with white so a line never shows on two screens. Outlines/links keep working
 (they point at the first view of each page).
 usage: render first with `pdftoppm -r 150 -gray in.pdf dir/p`, then
-       pdf_landscape_split.py in.pdf dir out.pdf   (read it in KOReader rotated to landscape)
+       pdf_landscape_split.py in.pdf dir out.pdf [min_view_width_pt]   (read it in KOReader rotated to landscape)
 """
 import sys, glob, statistics
 import numpy as np
@@ -12,6 +12,8 @@ from PIL import Image
 import pikepdf
 
 src, rdir, dst = sys.argv[1:4]
+# optional: minimum view width in pt (wider = smaller text, fewer screens; 395 pt = print size)
+MIN_W = float(sys.argv[4]) if len(sys.argv) > 4 else 0
 DPI = 150
 K = 72.0 / DPI           # px -> pt
 ASPECT = 1236 / 1648     # height / width of the landscape screen
@@ -55,7 +57,7 @@ def plan(p, page_h_px):
     """list of (x0, x1, y0, y1) visible regions in px; box width fixed, 4:3 height."""
     if p is None:
         return [None]
-    w = max(W_TEXT, p["right"] - p["left"]) + 2 * PAD / K
+    w = max(W_TEXT + 2 * PAD / K, MIN_W / K, p["right"] - p["left"] + 2 * PAD / K)
     cx = (p["left"] + p["right"]) / 2
     x0, x1 = cx - w / 2, cx + w / 2
     H = w * ASPECT
@@ -100,7 +102,9 @@ def to_box(view, mb):
 
 plans = []
 for i, p in enumerate(pages):
-    plans.append(plan(p, None))
+    # the cover stays an untouched portrait page (cutting images whites out bands of them,
+    # and the library thumbnail comes from page 1)
+    plans.append([None] if i == 0 else plan(p, None))
 
 nviews = sum(len(v) for v in plans)
 print("pages", len(pages), "-> views", nviews,
